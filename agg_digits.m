@@ -7,7 +7,7 @@ end
 mnist = mnist ./ 255;
 
 target_template = eye(10);
-batchtargets = repmat(target_template,1,1,5000);
+batchtargets = repmat(target_template,[1,1,5000]);
 
 batchdata = nan(10,784,5000);
 for idx=1:5000

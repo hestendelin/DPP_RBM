@@ -58,14 +58,13 @@ for epoch = epoch:maxepoch,
     temp_dpp_tracker = 0;
  fprintf(1,'epoch %d\r',epoch); 
  errsum=0;
+ 
+ % Find classes
+ everyone = sum(sum(batchtargets,1),3);
+ classes = find(everyone);
+ num_of_classes = length(classes);
  for batch = 1:numbatches,
- %fprintf(1,'epoch %d batch %d\r',epoch,batch); 
-
-    classes = [];
-    for instance_idx = 1:numcases
-        classes = [classes find(batchtargets(instance_idx,:,batch)==1)];
-    end
-    num_of_classes = size(unique(classes),2);
+    % Find out how many per class in this batch
     num_per_class = zeros(1,num_of_classes);
     for class_idx = 1:size(classes,2)
         num_per_class(1,classes(class_idx)) = num_per_class(1,classes(class_idx)) + 1; 
@@ -79,9 +78,11 @@ for epoch = epoch:maxepoch,
   data = batchdata(:,:,batch);
   poshidprobs = 1./(1 + exp(-data*vishid - repmat(hidbiases,numcases,1)));
   hidden_units = poshidprobs';
+  class_idcs = ones(num_of_classes,1);
   for instance_idx=1:numcases
       class_var = find(batchtargets(instance_idx,:,batch)==1);
-      y(:,class_idx,find(batchtargets(instance_idx,:,batch)==1)) = hidden_units(:,instance_idx);
+      y(:,class_idcs(class_var),class_var) = hidden_units(:,instance_idx);
+      class_idcs(class_var) = class_idcs(class_var) + 1;
   end
     %%%%%%save hidden units for later in proper column form
   batchposhidprobs(:,:,batch)=poshidprobs;
@@ -111,7 +112,7 @@ for epoch = epoch:maxepoch,
 
    %%%%COMPUTE DPP NUMBERS%%%%
    %normalize columns so we have a true probability (effect of this?)
-   ce_stats = zeros(num_hid,num_of_classes);
+   ce_stats = zeros(numhid,num_of_classes);
    for class_idx=1:num_of_classes
        ce_stats(:,class_idx) = mean(y(:,:,class_idx),2);
    end

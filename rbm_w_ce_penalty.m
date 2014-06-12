@@ -24,14 +24,14 @@
 
 numhid = 500;
 restart = 1;
-maxepoch = 50;
+maxepoch = 25;
 epsilonw      = 0.1;   % Learning rate for weights 
 epsilonvb     = 0.1;   % Learning rate for biases of visible units 
 epsilonhb     = 0.1;   % Learning rate for biases of hidden units 
 weightcost  = 0.0002;   
 initialmomentum  = 0.5;
 finalmomentum    = 0.9;
-dpp_tracker = [];
+ce_tracker = [];
 [numcases numdims numbatches]=size(batchdata);
 
 if restart ==1,
@@ -53,38 +53,56 @@ if restart ==1,
   batchposhidprobs=zeros(numcases,numhid,numbatches);
 end
 
-
-for epoch = epoch:maxepoch,
-    temp_dpp_tracker = 0;
- fprintf(1,'epoch %d\r',epoch); 
- errsum=0;
- 
- % Find classes
+ %%%%%%%%%%%%%%% Find classes %%%%%%%%%%%%%%%%%%%%%
  everyone = sum(sum(batchtargets,1),3);
  classes = find(everyone);
  num_of_classes = length(classes);
+ hidden_units_per_class_cache = zeros(numhid,5000,10);
+hidden_unit_y_neq_i_means = zeros(numhid,10);
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+ 
+
+for epoch = epoch:maxepoch,
+    temp_ce_tracker = 0;
+ fprintf(1,'epoch %d\r',epoch); 
+ errsum=0;
+ 
+ 
+ for idx=1:num_of_classes %%%%%% compute y!=i class means
+     hidden_unit_y_neq_i_means(:,idx) = squeeze(mean(mean(hidden_units_per_class_cache(:,:,find(classes~=idx)),2),3));
+ end
+ hidden_units_per_class_cache = zeros(numhid,5000,10);
+ cache_counter = ones(1,num_of_classes);
+ 
  for batch = 1:numbatches,
+     
     % Find out how many per class in this batch
     num_per_class = zeros(1,num_of_classes);
-    for class_idx = 1:size(classes,2)
-        num_per_class(1,classes(class_idx)) = num_per_class(1,classes(class_idx)) + 1; 
+    for case_idx = 1:numcases
+        class_idx = find(batchtargets(case_idx,:,batch)==1);
+        num_per_class(1,class_idx) = num_per_class(1,class_idx) + 1; 
     end
     num_per_class_max = max(num_per_class);
  
     y = zeros(numhid, num_per_class_max, num_of_classes);
-
+    
  
 %%%%%%%%% START POSITIVE PHASE %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
   data = batchdata(:,:,batch);
   poshidprobs = 1./(1 + exp(-data*vishid - repmat(hidbiases,numcases,1)));
+  
+  %%%%%%save hidden units for later in proper column form
   hidden_units = poshidprobs';
-  class_idcs = ones(num_of_classes,1);
+  class_idxs = ones(num_of_classes,1);
   for instance_idx=1:numcases
       class_var = find(batchtargets(instance_idx,:,batch)==1);
-      y(:,class_idcs(class_var),class_var) = hidden_units(:,instance_idx);
-      class_idcs(class_var) = class_idcs(class_var) + 1;
+      y(:,class_idxs(class_var),class_var) = hidden_units(:,instance_idx);
+      hidden_units_per_class_cache(:,cache_counter(class_var),class_var) = hidden_units(:,instance_idx);
+      class_idxs(class_var) = class_idxs(class_var) + 1;
+      cache_counter(class_var) = cache_counter(class_var) + 1;
   end
-    %%%%%%save hidden units for later in proper column form
+  %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% 
+  
   batchposhidprobs(:,:,batch)=poshidprobs;
   posprods    = data' * poshidprobs;
   poshidact   = sum(poshidprobs);
@@ -110,36 +128,53 @@ for epoch = epoch:maxepoch,
      momentum=initialmomentum;
    end;
 
-   %%%%COMPUTE DPP NUMBERS%%%%
-   %normalize columns so we have a true probability (effect of this?)
-   ce_stats = zeros(numhid,num_of_classes);
-   for class_idx=1:num_of_classes
-       ce_stats(:,class_idx) = mean(y(:,:,class_idx),2);
-   end
+   
+%%%%%%%%%% COMPUTE CROSS ENTROPY STATISTICS %%%%%%%%%%%%%%%%%% 
+   
+    tracker_sum = 0;
    ce_sum = 0;
    difference_differential = 0;
-   class_idx_list = [1:num_of_classes];
    for class_idx=1:num_of_classes
-       temp_mean = mean(ce_stats(:,find(class_idx_list~=class_idx)),2);
-       ce_sum = ce_sum + sum( -1.*temp_mean.*log(ce_stats(:,class_idx)) - (1-temp_mean).*log(1-ce_stats(:,class_idx)));
-       difference_differential = difference_differential + sum(ce_stats(:,class_idx) - temp_mean);
-   end
-   gram = hidden_units'*hidden_units;
-   dpp_prob = det(gram);
-   temp_dpp_tracker = temp_dpp_tracker + dpp_prob;
-   if mod(batch,1000) == 0
-       display(dpp_prob);
-   end
-   diversity_coeff = .005; %cross-validate this!  
-   
-   diversity_penalty_derivative = diversity_coeff * (-1/ce_sum^2) * difference_differential;
+       temp_mean = hidden_unit_y_neq_i_means(:,class_idx);  %means from last epoch are used
+       temp_y_eq_i = mean(y(:,:,class_idx),2);
 
+       %temp_y_eq_i(find(temp_y_eq_i==0))=realmin;
+       %temp_y_eq_i(find(temp_y_eq_i==1))=.999;
+       
+       if temp_y_eq_i-temp_mean==0
+           temp_y_eq_i = temp_y_eq_i + .0001;
+       end
+       
+       tracker_sum = tracker_sum + sum(power((1-abs(temp_y_eq_i - temp_mean)),2));
+   
+       ce_sum = ce_sum + (1./abs(temp_y_eq_i-temp_mean) - temp_y_eq_i + temp_mean);%.*temp_y_eq_i.*(1-temp_y_eq_i);
+       %ce_sum(ce_sum==0) = realmin;
+       %difference_differential = difference_differential + temp_y_eq_i - temp_mean;
+   end
+   
+   if mod(batch,1000)==0 && epoch>1
+    display(tracker_sum);
+   end
+   
+   diversity_coeff = .00000001; %cross-validate this!  
+   %difference_differential = difference_differential./10;
+   ce_sum = ce_sum./10;
+   
+   if epoch==1
+       div_grad_weights = 0;
+       div_grad_bias = 0;
+   else
+       diversity_penalty_derivative = diversity_coeff * ce_sum;
+       %temp_ce_tracker = temp_ce_tracker + sum(ce_sum);
+       div_grad_weights = repmat(ce_sum',numdims,1);
+       div_grad_bias = ce_sum';
+   end
 
 %%%%%%%%% UPDATE WEIGHTS AND BIASES %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% 
     vishidinc = momentum*vishidinc + ...
-                epsilonw*( (posprods-negprods)/numcases - weightcost*vishid) - diversity_penalty_derivative;
+                epsilonw*( (posprods-negprods)/numcases - weightcost*vishid) + div_grad_weights;
     visbiasinc = momentum*visbiasinc + (epsilonvb/numcases)*(posvisact-negvisact);
-    hidbiasinc = momentum*hidbiasinc + (epsilonhb/numcases)*(poshidact-neghidact) - diversity_penalty_derivative;
+    hidbiasinc = momentum*hidbiasinc + (epsilonhb/numcases)*(poshidact-neghidact) + div_grad_bias;
 
     vishid = vishid + vishidinc;
     visbiases = visbiases + visbiasinc;
@@ -148,6 +183,6 @@ for epoch = epoch:maxepoch,
 %%%%%%%%%%%%%%%% END OF UPDATES %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% 
 
  end
-  dpp_tracker = [dpp_tracker temp_dpp_tracker/(numbatches)];
+  ce_tracker = [ce_tracker temp_ce_tracker/(numbatches)];
   fprintf(1, 'epoch %4i error %6.1f  \n', epoch, errsum); 
 end;
